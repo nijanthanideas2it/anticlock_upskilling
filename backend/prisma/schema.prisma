@@ -1,0 +1,357 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  SUPPORT_MANAGER
+  SUPPORT_AGENT
+  CUSTOMER
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  PENDING
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum SlaStatus {
+  WARNING
+  BREACHED
+}
+
+enum CommentVisibility {
+  PUBLIC
+  INTERNAL
+}
+
+enum EscalationType {
+  AUTO
+  MANUAL
+}
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+}
+
+enum NotificationEvent {
+  TICKET_CREATED
+  TICKET_ASSIGNED
+  TICKET_STATUS_CHANGED
+  TICKET_REPLY
+  TICKET_RESOLVED
+  SLA_WARNING
+  SLA_BREACHED
+  TICKET_ESCALATED
+  AGENT_INVITED
+  PASSWORD_RESET
+  CSAT_REQUEST
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id                        String    @id @default(uuid())
+  name                      String
+  email                     String    @unique
+  passwordHash              String
+  role                      Role
+  isActive                  Boolean   @default(true)
+  isAvailable               Boolean   @default(true)
+  isEmailVerified           Boolean   @default(false)
+  emailVerificationToken    String?   @unique
+  emailVerificationExpiresAt DateTime?
+  invitationToken           String?   @unique
+  invitationExpiresAt       DateTime?
+  lastLoginAt               DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  deletedAt                 DateTime?
+
+  customerProfile     Customer?
+  refreshTokens       RefreshToken[]
+  passwordResets      PasswordReset[]
+  fcmTokens           FcmToken[]
+  assignedTickets     Ticket[]            @relation("AssignedAgent")
+  createdTickets      Ticket[]            @relation("TicketCreator")
+  comments            Comment[]
+  uploadedAttachments Attachment[]        @relation("AttachmentUploader")
+  escalationsBy       EscalationEvent[]   @relation("EscalatedByUser")
+  escalationsTo       EscalationEvent[]   @relation("EscalatedToUser")
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+
+  @@index([role, isActive])
+  @@index([role, isActive, isAvailable])
+  @@index([deletedAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model PasswordReset {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+}
+
+model FcmToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Customer {
+  id             String    @id @default(uuid())
+  companyName    String?
+  primaryContact String
+  phone          String?
+  tier           String    @default("standard")
+  userId         String    @unique
+  user           User      @relation(fields: [userId], references: [id])
+  tickets        Ticket[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tickets   Ticket[]
+}
+
+model SlaPolicy {
+  id                   String         @id @default(uuid())
+  name                 String
+  priority             TicketPriority @unique
+  maxResponseMinutes   Int
+  maxResolutionMinutes Int
+  businessHoursOnly    Boolean        @default(false)
+  warningThreshold     Float          @default(0.8)
+  isActive             Boolean        @default(true)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  tickets              Ticket[]
+}
+
+model Ticket {
+  id               String         @id @default(uuid())
+  referenceNumber  String         @unique
+  title            String
+  description      String         @db.Text
+  status           TicketStatus   @default(OPEN)
+  priority         TicketPriority
+  slaStatus        SlaStatus?
+
+  categoryId       String
+  category         Category       @relation(fields: [categoryId], references: [id])
+
+  customerId       String
+  customer         Customer       @relation(fields: [customerId], references: [id])
+
+  createdById      String
+  createdBy        User           @relation("TicketCreator", fields: [createdById], references: [id])
+
+  assigneeId       String?
+  assignee         User?          @relation("AssignedAgent", fields: [assigneeId], references: [id])
+
+  slaPolicyId      String?
+  slaPolicy        SlaPolicy?     @relation(fields: [slaPolicyId], references: [id])
+
+  slaResponseDue      DateTime?
+  slaResolutionDue    DateTime?
+  firstResponseAt     DateTime?
+  resolvedAt          DateTime?
+
+  csatScore           Int?
+  csatComment         String?
+  csatSubmittedAt     DateTime?
+  csatWindowExpiresAt DateTime?
+
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
+
+  comments         Comment[]
+  attachments      Attachment[]    @relation("TicketAttachments")
+  escalations      EscalationEvent[]
+  notifications    Notification[]
+  auditLogs        AuditLog[]
+
+  @@index([assigneeId, status])
+  @@index([customerId, status])
+  @@index([status, priority])
+  @@index([slaResponseDue])
+  @@index([slaResolutionDue])
+  @@index([createdAt])
+  @@index([resolvedAt])
+  @@index([deletedAt])
+}
+
+model Comment {
+  id          String            @id @default(uuid())
+  content     String            @db.Text
+  visibility  CommentVisibility @default(PUBLIC)
+
+  ticketId    String
+  ticket      Ticket            @relation(fields: [ticketId], references: [id])
+
+  authorId    String
+  author      User              @relation(fields: [authorId], references: [id])
+
+  attachments Attachment[]      @relation("CommentAttachments")
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+
+  @@index([ticketId, createdAt])
+  @@index([authorId])
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  fileName     String
+  fileSize     Int
+  mimeType     String
+  storageKey   String
+
+  ticketId     String?
+  ticket       Ticket?  @relation("TicketAttachments", fields: [ticketId], references: [id])
+
+  commentId    String?
+  comment      Comment? @relation("CommentAttachments", fields: [commentId], references: [id])
+
+  uploadedById String
+  uploadedBy   User     @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+
+  createdAt    DateTime @default(now())
+
+  @@index([ticketId])
+  @@index([commentId])
+  @@index([uploadedById])
+}
+
+model EscalationEvent {
+  id            String         @id @default(uuid())
+  type          EscalationType
+  reason        String
+
+  ticketId      String
+  ticket        Ticket         @relation(fields: [ticketId], references: [id])
+
+  escalatedById String?
+  escalatedBy   User?          @relation("EscalatedByUser", fields: [escalatedById], references: [id])
+
+  escalatedToId String
+  escalatedTo   User           @relation("EscalatedToUser", fields: [escalatedToId], references: [id])
+
+  createdAt     DateTime       @default(now())
+
+  @@index([ticketId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id          String              @id @default(uuid())
+  channel     NotificationChannel
+  eventType   NotificationEvent
+  payload     Json
+  isRead      Boolean             @default(false)
+  isDelivered Boolean             @default(false)
+  sentAt      DateTime?
+  readAt      DateTime?
+
+  recipientId String
+  recipient   User                @relation(fields: [recipientId], references: [id])
+
+  ticketId    String?
+  ticket      Ticket?             @relation(fields: [ticketId], references: [id])
+
+  createdAt   DateTime            @default(now())
+
+  @@index([recipientId, isRead])
+  @@index([recipientId, createdAt])
+  @@index([ticketId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  fieldName   String
+  oldValue    String?  @db.Text
+  newValue    String?  @db.Text
+
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id])
+
+  changedById String
+  changedBy   User     @relation(fields: [changedById], references: [id])
+
+  changedAt   DateTime @default(now())
+
+  @@index([ticketId, changedAt])
+  @@index([changedById])
+}
+
+model BusinessHours {
+  id         String   @id @default(uuid())
+  dayOfWeek  Int
+  startTime  String
+  endTime    String
+  isActive   Boolean  @default(true)
+  timezone   String   @default("UTC")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([dayOfWeek])
+}
+
+model SystemConfig {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
